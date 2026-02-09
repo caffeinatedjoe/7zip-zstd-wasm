@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Zstandard WASM Demo</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 2rem;
+        display: flex;
+        justify-content: center;
+        background: #0f172a;
+        color: #e2e8f0;
+      }
+      .card {
+        max-width: 720px;
+        width: 100%;
+        padding: 2rem;
+        border-radius: 16px;
+        background: #111827;
+        box-shadow: 0 20px 60px rgba(15, 23, 42, 0.45);
+      }
+      h1 {
+        margin-top: 0;
+      }
+      textarea {
+        width: 100%;
+        min-height: 120px;
+        border-radius: 12px;
+        padding: 0.75rem 1rem;
+        border: 1px solid #334155;
+        background: #0b1220;
+        color: inherit;
+        font-size: 1rem;
+      }
+      button {
+        margin-top: 1rem;
+        padding: 0.75rem 1.25rem;
+        border-radius: 999px;
+        border: 1px solid #38bdf8;
+        background: #0ea5e9;
+        color: white;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      .metrics {
+        margin-top: 1.5rem;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 1rem;
+      }
+      .metric {
+        padding: 1rem;
+        border-radius: 12px;
+        background: #0f172a;
+        border: 1px solid #1f2937;
+      }
+      .metric span {
+        display: block;
+        font-size: 0.9rem;
+        color: #94a3b8;
+      }
+      .metric strong {
+        font-size: 1.1rem;
+      }
+      .status {
+        margin-top: 1rem;
+        font-size: 0.95rem;
+        color: #a5b4fc;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Zstandard WebAssembly Demo</h1>
+      <p>Compress and decompress a sample payload using the bundled Zstandard WASM build.</p>
+      <textarea id="input">7-Zip Zstandard Edition can now run in WebAssembly. Adjust this text and try again.</textarea>
+      <button id="run">Run compression</button>
+      <div class="metrics">
+        <div class="metric">
+          <span>Input bytes</span>
+          <strong id="input-bytes">-</strong>
+        </div>
+        <div class="metric">
+          <span>Compressed bytes</span>
+          <strong id="compressed-bytes">-</strong>
+        </div>
+        <div class="metric">
+          <span>Compression ratio</span>
+          <strong id="ratio">-</strong>
+        </div>
+        <div class="metric">
+          <span>Round-trip check</span>
+          <strong id="roundtrip">-</strong>
+        </div>
+      </div>
+      <div class="status" id="status">Loading WASM module...</div>
+    </div>
+
+    <script src="../dist/zstd_wasm.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
