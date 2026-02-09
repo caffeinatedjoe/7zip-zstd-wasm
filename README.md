@@ -12,6 +12,11 @@ You can install it in two ways:
 [![Latest stable release](https://img.shields.io/github/release/mcmilk/7-Zip-zstd.svg)](https://github.com/mcmilk/7-Zip-zstd/releases)
 [![PayPal.me](https://img.shields.io/badge/PayPal-me-blue.svg?maxAge=2592000)](https://www.paypal.me/TinoReichardt)
 
+## WebAssembly build (Zstandard)
+
+This repository includes a minimal WebAssembly build wrapper for the bundled
+Zstandard codec. See `wasm/README.md` for build steps and usage notes.
+
 ## Codec overview
 1. [Zstandard] v1.5.7 is a real-time compression algorithm, providing high compression ratios. It offers a very wide range of compression / speed trade-off, while being backed by a very fast decoder.
    - Levels: 1..22
