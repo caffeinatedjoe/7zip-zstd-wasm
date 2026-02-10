@@ -28,6 +28,12 @@
       h1 {
         margin-top: 0;
       }
+      label.input-group {
+        display: block;
+        margin: 1.25rem 0 0.5rem;
+        font-size: 0.9rem;
+        color: #94a3b8;
+      }
       textarea {
         width: 100%;
         min-height: 120px;
@@ -72,6 +78,96 @@
       .metric strong {
         font-size: 1.1rem;
       }
+      .file-section {
+        margin-top: 1.5rem;
+      }
+      input[type="file"] {
+        width: 100%;
+        padding: 0.5rem 0.75rem;
+        border-radius: 8px;
+        border: 1px dashed #475569;
+        background: #0b1220;
+        color: inherit;
+      }
+      .file-status {
+        margin-top: 0.5rem;
+        font-size: 0.9rem;
+        color: #94a3b8;
+      }
+      .file-list {
+        margin-top: 0.75rem;
+        border-radius: 12px;
+        border: 1px solid #1f2937;
+        background: #0b1220;
+        padding: 0.75rem;
+        display: grid;
+        gap: 0.5rem;
+      }
+      .file-row {
+        display: grid;
+        grid-template-columns: 1fr auto auto;
+        gap: 0.75rem;
+        align-items: center;
+        padding: 0.5rem 0.75rem;
+        border-radius: 10px;
+        background: #0f172a;
+        border: 1px solid #1f2937;
+        font-size: 0.9rem;
+      }
+      .file-row.is-dir {
+        opacity: 0.7;
+      }
+      .file-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .file-size {
+        color: #94a3b8;
+        font-variant-numeric: tabular-nums;
+      }
+      .file-row button {
+        margin: 0;
+        padding: 0.4rem 0.9rem;
+        border-radius: 999px;
+        border: 1px solid #38bdf8;
+        background: #0ea5e9;
+        color: #fff;
+        font-weight: 600;
+        font-size: 0.85rem;
+        cursor: pointer;
+      }
+      .file-row button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      .file-preview {
+        margin-top: 0.75rem;
+      }
+      .file-preview__title {
+        font-size: 0.9rem;
+        color: #94a3b8;
+        margin-bottom: 0.35rem;
+      }
+      .file-output {
+        margin-top: 0.5rem;
+        background: #020617;
+        border-radius: 12px;
+        padding: 0.75rem 1rem;
+        min-height: 120px;
+        border: 1px solid #1f2937;
+        white-space: pre-wrap;
+      }
+      .download-link {
+        display: inline-flex;
+        margin-top: 0.5rem;
+        padding: 0.5rem 0.9rem;
+        border-radius: 999px;
+        border: 1px solid #22c55e;
+        color: #bbf7d0;
+        text-decoration: none;
+        font-size: 0.85rem;
+      }
       .status {
         margin-top: 1rem;
         font-size: 0.95rem;
@@ -82,9 +178,21 @@
   <body>
     <div class="card">
       <h1>Zstandard WebAssembly Demo</h1>
-      <p>Compress and decompress a sample payload using the bundled Zstandard WASM build.</p>
+      <p>Compress the textarea contents or open a .7z archive built with 7-Zip Zstandard Edition.</p>
+      <label class="input-group" for="input">Plain text (will be compressed):</label>
       <textarea id="input">7-Zip Zstandard Edition can now run in WebAssembly. Adjust this text and try again.</textarea>
       <button id="run">Run compression</button>
+      <div class="file-section">
+        <label class="input-group" for="file-input">Open a .7z archive</label>
+        <input type="file" id="file-input" accept=".7z" />
+        <div class="file-status" id="file-status">No archive loaded.</div>
+        <div class="file-list" id="file-list">Upload a .7z to see its entries.</div>
+        <div class="file-preview">
+          <div class="file-preview__title">Extracted preview</div>
+          <pre class="file-output" id="file-output">Select a file to extract it.</pre>
+          <a class="download-link" id="file-download" href="#" download hidden>Download extracted file</a>
+        </div>
+      </div>
       <div class="metrics">
         <div class="metric">
           <span>Input bytes</span>

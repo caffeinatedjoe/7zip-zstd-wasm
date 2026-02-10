@@ -16,6 +16,7 @@
 #include "Delta.h"
 #include "LzmaDec.h"
 #include "Lzma2Dec.h"
+#include "zstd.h"
 #ifdef Z7_PPMD_SUPPORT
 #include "Ppmd7.h"
 #endif
@@ -26,6 +27,7 @@
 #endif
 #define k_LZMA  0x30101
 #define k_BCJ2  0x303011B
+#define k_ZSTD  0x4F71101
 
 #if !defined(Z7_NO_METHODS_FILTERS)
 #define Z7_USE_BRANCH_FILTER
@@ -299,6 +301,59 @@ static SRes SzDecodeCopy(UInt64 inSize, ILookInStreamPtr inStream, Byte *outBuff
   return SZ_OK;
 }
 
+static SRes SzDecodeZstd(const Byte *props, unsigned propsSize, UInt64 inSize, ILookInStreamPtr inStream,
+    Byte *outBuffer, SizeT outSize, ISzAllocPtr allocMain)
+{
+  SRes res = SZ_OK;
+  Byte *inBuf = NULL;
+  UInt64 remaining = inSize;
+  size_t inSizeT;
+
+  (void)props;
+  if (!(propsSize == 0 || propsSize == 1 || propsSize == 3 || propsSize == 5))
+    return SZ_ERROR_UNSUPPORTED;
+  if (inSize > (UInt64)(SizeT)-1)
+    return SZ_ERROR_MEM;
+
+  inSizeT = (size_t)inSize;
+  inBuf = (Byte *)ISzAlloc_Alloc(allocMain, inSizeT);
+  if (!inBuf && inSizeT != 0)
+    return SZ_ERROR_MEM;
+
+  {
+    Byte *cur = inBuf;
+    while (remaining > 0)
+    {
+      const void *buf;
+      size_t curSize = (1 << 18);
+      if (curSize > remaining)
+        curSize = (size_t)remaining;
+      RINOK(ILookInStream_Look(inStream, &buf, &curSize))
+      if (curSize == 0)
+      {
+        res = SZ_ERROR_INPUT_EOF;
+        break;
+      }
+      memcpy(cur, buf, curSize);
+      cur += curSize;
+      remaining -= curSize;
+      res = ILookInStream_Skip(inStream, curSize);
+      if (res != SZ_OK)
+        break;
+    }
+  }
+
+  if (res == SZ_OK)
+  {
+    size_t decoded = ZSTD_decompress(outBuffer, outSize, inBuf, inSizeT);
+    if (ZSTD_isError(decoded) || decoded != outSize)
+      res = SZ_ERROR_DATA;
+  }
+
+  ISzAlloc_Free(allocMain, inBuf);
+  return res;
+}
+
 static BoolInt IS_MAIN_METHOD(UInt32 m)
 {
   switch (m)
@@ -308,6 +363,7 @@ static BoolInt IS_MAIN_METHOD(UInt32 m)
   #ifndef Z7_NO_METHOD_LZMA2
     case k_LZMA2:
   #endif
+    case k_ZSTD:
   #ifdef Z7_PPMD_SUPPORT
     case k_PPMD:
   #endif
@@ -482,6 +538,10 @@ static SRes SzFolder_Decode2(const CSzFolder *folder,
         RINOK(SzDecodeLzma2(propsData + coder->PropsOffset, coder->PropsSize, inSize, inStream, outBufCur, outSizeCur, allocMain))
       }
     #endif
+      else if (coder->MethodID == k_ZSTD)
+      {
+        RINOK(SzDecodeZstd(propsData + coder->PropsOffset, coder->PropsSize, inSize, inStream, outBufCur, outSizeCur, allocMain))
+      }
     #ifdef Z7_PPMD_SUPPORT
       else if (coder->MethodID == k_PPMD)
       {
