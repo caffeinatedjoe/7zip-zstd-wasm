@@ -18,6 +18,10 @@ ZSTD_WASM_EXPORT size_t zstd_wasm_compress(const uint8_t *src,
   return ZSTD_compress(dst, dst_capacity, src, src_size, level);
 }
 
+ZSTD_WASM_EXPORT size_t zstd_wasm_compress_bound(size_t src_size) {
+  return ZSTD_compressBound(src_size);
+}
+
 ZSTD_WASM_EXPORT size_t zstd_wasm_decompress(const uint8_t *src,
                                              size_t src_size,
                                              uint8_t *dst,

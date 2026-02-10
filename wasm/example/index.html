@@ -149,6 +149,24 @@
         color: #94a3b8;
         margin-bottom: 0.35rem;
       }
+      .rezip-section {
+        margin-top: 1rem;
+        border-radius: 12px;
+        padding: 0.75rem 1rem;
+        border: 1px solid #1f2937;
+        background: #0f172a;
+      }
+      .rezip-title {
+        font-size: 0.9rem;
+        color: #94a3b8;
+        margin-bottom: 0.5rem;
+      }
+      .rezip-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        align-items: center;
+      }
       .file-output {
         margin-top: 0.5rem;
         background: #020617;
@@ -191,6 +209,14 @@
           <div class="file-preview__title">Extracted preview</div>
           <pre class="file-output" id="file-output">Select a file to extract it.</pre>
           <a class="download-link" id="file-download" href="#" download hidden>Download extracted file</a>
+        </div>
+        <div class="rezip-section">
+          <div class="rezip-title">Repack as .7z (Zstandard level 3)</div>
+          <div class="rezip-actions">
+            <button id="rezip-button" type="button">Repack archive</button>
+            <a class="download-link" id="rezip-download" href="#" download hidden>Download .7z</a>
+          </div>
+          <div class="file-status" id="rezip-status">Repack requires a loaded archive.</div>
         </div>
       </div>
       <div class="metrics">

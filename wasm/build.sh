@@ -56,7 +56,7 @@ emcc \
   "${ROOT_DIR}/C/Bra86.c" \
   "${ROOT_DIR}/C/Bcj2.c" \
   "${ROOT_DIR}/C/Delta.c" \
-  -s EXPORTED_FUNCTIONS="['_zstd_wasm_compress','_zstd_wasm_decompress','_zstd_wasm_get_frame_content_size','_zstd_wasm_is_error','_zstd_wasm_get_error_name','_wasm7z_open','_wasm7z_close','_wasm7z_file_count','_wasm7z_fetch_name','_wasm7z_name_buffer','_wasm7z_name_length','_wasm7z_is_directory','_wasm7z_file_size','_wasm7z_extract','_malloc','_free']" \
+  -s EXPORTED_FUNCTIONS="['_zstd_wasm_compress','_zstd_wasm_compress_bound','_zstd_wasm_decompress','_zstd_wasm_get_frame_content_size','_zstd_wasm_is_error','_zstd_wasm_get_error_name','_wasm7z_open','_wasm7z_close','_wasm7z_file_count','_wasm7z_fetch_name','_wasm7z_name_buffer','_wasm7z_name_length','_wasm7z_is_directory','_wasm7z_file_size','_wasm7z_extract','_malloc','_free']" \
   -s EXPORTED_RUNTIME_METHODS="['cwrap','getValue','setValue']" \
   -s ALLOW_MEMORY_GROWTH=1 \
   -s MODULARIZE=1 \

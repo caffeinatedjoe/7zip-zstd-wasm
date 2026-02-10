@@ -10,6 +10,9 @@ const fileStatus = document.getElementById("file-status");
 const fileList = document.getElementById("file-list");
 const fileOutput = document.getElementById("file-output");
 const downloadLink = document.getElementById("file-download");
+const rezipButton = document.getElementById("rezip-button");
+const rezipStatus = document.getElementById("rezip-status");
+const rezipDownload = document.getElementById("rezip-download");
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -18,6 +21,7 @@ const utf16Decoder = new TextDecoder("utf-16le");
 
 let moduleInstance;
 let compressFn;
+let compressBoundFn;
 let decompressFn;
 let frameSizeFn;
 let isErrorFn;
@@ -31,6 +35,7 @@ const archiveState = {
   name: "",
   entries: [],
   downloadUrl: null,
+  rezipUrl: null,
 };
 
 function formatRatio(inputSize, compressedSize) {
@@ -146,6 +151,18 @@ function resetDownload() {
   downloadLink.textContent = "Download extracted file";
 }
 
+function resetRezip() {
+  if (archiveState.rezipUrl) {
+    URL.revokeObjectURL(archiveState.rezipUrl);
+    archiveState.rezipUrl = null;
+  }
+  if (rezipDownload) {
+    rezipDownload.hidden = true;
+    rezipDownload.href = "#";
+    rezipDownload.textContent = "Download .7z";
+  }
+}
+
 function resetArchiveState() {
   if (archiveState.ptr && wasm7z) {
     wasm7z.close();
@@ -156,6 +173,13 @@ function resetArchiveState() {
   archiveState.name = "";
   archiveState.entries = [];
   resetDownload();
+  resetRezip();
+  if (rezipStatus) {
+    rezipStatus.textContent = "Repack requires a loaded archive.";
+  }
+  if (rezipButton) {
+    rezipButton.disabled = true;
+  }
 }
 
 function looksLikeText(bytes) {
@@ -268,6 +292,370 @@ function extractEntry(entry) {
   fileStatus.textContent = `Extracted ${entry.name} (${formatBytes(actualSize)})`;
 }
 
+function extractEntryBytes(entry) {
+  const capacity = entry.size > 0 ? entry.size : 1;
+  const dstPtr = moduleInstance._malloc(capacity);
+  const sizePtr = moduleInstance._malloc(4);
+
+  if (!dstPtr || !sizePtr) {
+    if (dstPtr) moduleInstance._free(dstPtr);
+    if (sizePtr) moduleInstance._free(sizePtr);
+    throw new Error("Unable to allocate memory for extraction.");
+  }
+
+  moduleInstance.setValue(sizePtr, 0, "i32");
+  const result = wasm7z.extract(entry.index, dstPtr, capacity, sizePtr);
+  if (result !== 0) {
+    moduleInstance._free(dstPtr);
+    moduleInstance._free(sizePtr);
+    throw new Error(`Extraction failed (${result}).`);
+  }
+
+  const actualSize = moduleInstance.getValue(sizePtr, "i32") >>> 0;
+  const resultBytes = readBytes(dstPtr, actualSize);
+
+  moduleInstance._free(dstPtr);
+  moduleInstance._free(sizePtr);
+  return resultBytes;
+}
+
+function compressZstd(srcBytes, level) {
+  const srcPtr = moduleInstance._malloc(srcBytes.length || 1);
+  if (!srcPtr) {
+    throw new Error("Unable to allocate memory for compression.");
+  }
+  writeBytes(srcPtr, srcBytes);
+
+  const bound = compressBoundFn
+    ? compressBoundFn(srcBytes.length)
+    : srcBytes.length + Math.ceil(srcBytes.length / 8) + 256;
+  const dstPtr = moduleInstance._malloc(bound || 1);
+  if (!dstPtr) {
+    moduleInstance._free(srcPtr);
+    throw new Error("Unable to allocate output buffer for compression.");
+  }
+
+  const compressedSize = compressFn(
+    srcPtr,
+    srcBytes.length,
+    dstPtr,
+    bound,
+    level,
+  );
+
+  if (isErrorFn(compressedSize)) {
+    const message = errorNameFn(compressedSize);
+    moduleInstance._free(srcPtr);
+    moduleInstance._free(dstPtr);
+    throw new Error(`Compression failed: ${message}`);
+  }
+
+  const compressed = readBytes(dstPtr, compressedSize);
+  moduleInstance._free(srcPtr);
+  moduleInstance._free(dstPtr);
+  return compressed;
+}
+
+let crcTable = null;
+function makeCrcTable() {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let j = 0; j < 8; j++) {
+      c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    }
+    table[i] = c >>> 0;
+  }
+  return table;
+}
+
+function crc32(bytes) {
+  if (!crcTable) {
+    crcTable = makeCrcTable();
+  }
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) {
+    const byte = bytes[i];
+    crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function encodeUtf16LE(text) {
+  const out = new Uint8Array((text.length + 1) * 2);
+  let offset = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    out[offset++] = code & 0xff;
+    out[offset++] = (code >> 8) & 0xff;
+  }
+  out[offset++] = 0;
+  out[offset++] = 0;
+  return out.subarray(0, offset);
+}
+
+function writeNumber(value, out) {
+  let v = BigInt(value);
+  if (v < 0n) {
+    v = 0n;
+  }
+  if (v < 0x80n) {
+    out.push(Number(v));
+    return;
+  }
+  let n = 1;
+  for (; n < 9; n++) {
+    const totalBits = 7n + 7n * BigInt(n);
+    if (v < (1n << totalBits)) {
+      break;
+    }
+  }
+  const lowBits = v & ((1n << (8n * BigInt(n))) - 1n);
+  const highPart = v >> (8n * BigInt(n));
+  const prefix = (0xff << (8 - n)) & 0xff;
+  out.push(prefix | Number(highPart));
+  for (let i = 0; i < n; i++) {
+    out.push(Number((lowBits >> (8n * BigInt(i))) & 0xffn));
+  }
+}
+
+function writeUInt32LE(value, out, offset) {
+  out[offset] = value & 0xff;
+  out[offset + 1] = (value >>> 8) & 0xff;
+  out[offset + 2] = (value >>> 16) & 0xff;
+  out[offset + 3] = (value >>> 24) & 0xff;
+}
+
+function writeUInt64LE(value, out, offset) {
+  let v = BigInt(value);
+  for (let i = 0; i < 8; i++) {
+    out[offset + i] = Number(v & 0xffn);
+    v >>= 8n;
+  }
+}
+
+function makeBitVector(numBits, predicate) {
+  const numBytes = (numBits + 7) >> 3;
+  const bytes = new Uint8Array(numBytes);
+  for (let i = 0; i < numBits; i++) {
+    if (predicate(i)) {
+      bytes[i >> 3] |= 0x80 >> (i & 7);
+    }
+  }
+  return bytes;
+}
+
+function build7zHeader(options) {
+  const {
+    packSizes,
+    unpackSizes,
+    fileNames,
+    emptyStreamBits,
+    emptyFileBits,
+  } = options;
+  const out = [];
+  const pushByte = (b) => out.push(b & 0xff);
+  const pushBytes = (bytes) => {
+    for (let i = 0; i < bytes.length; i++) {
+      out.push(bytes[i] & 0xff);
+    }
+  };
+
+  const k7zIdEnd = 0x00;
+  const k7zIdHeader = 0x01;
+  const k7zIdMainStreamsInfo = 0x04;
+  const k7zIdFilesInfo = 0x05;
+  const k7zIdPackInfo = 0x06;
+  const k7zIdUnpackInfo = 0x07;
+  const k7zIdSize = 0x09;
+  const k7zIdFolder = 0x0b;
+  const k7zIdCodersUnpackSize = 0x0c;
+  const k7zIdEmptyStream = 0x0e;
+  const k7zIdEmptyFile = 0x0f;
+  const k7zIdName = 0x11;
+
+  pushByte(k7zIdHeader);
+  pushByte(k7zIdMainStreamsInfo);
+
+  pushByte(k7zIdPackInfo);
+  writeNumber(0, out);
+  writeNumber(packSizes.length, out);
+  pushByte(k7zIdSize);
+  packSizes.forEach((size) => writeNumber(size, out));
+  pushByte(k7zIdEnd);
+
+  pushByte(k7zIdUnpackInfo);
+  pushByte(k7zIdFolder);
+  writeNumber(unpackSizes.length, out);
+  pushByte(0);
+
+  for (let i = 0; i < unpackSizes.length; i++) {
+    writeNumber(1, out);
+    pushByte(0x24);
+    pushBytes([0x04, 0xf7, 0x11, 0x01]);
+    writeNumber(5, out);
+    pushBytes([1, 5, 3, 0, 0]);
+  }
+
+  pushByte(k7zIdCodersUnpackSize);
+  unpackSizes.forEach((size) => writeNumber(size, out));
+  pushByte(k7zIdEnd);
+
+  pushByte(k7zIdEnd);
+
+  pushByte(k7zIdFilesInfo);
+  writeNumber(fileNames.length, out);
+
+  const nameChunks = fileNames.map(encodeUtf16LE);
+  const namesSize = nameChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  pushByte(k7zIdName);
+  writeNumber(namesSize + 1, out);
+  pushByte(0);
+  nameChunks.forEach((chunk) => pushBytes(chunk));
+
+  if (emptyStreamBits && emptyStreamBits.length) {
+    pushByte(k7zIdEmptyStream);
+    writeNumber(emptyStreamBits.length, out);
+    pushBytes(emptyStreamBits);
+    if (emptyFileBits && emptyFileBits.length) {
+      pushByte(k7zIdEmptyFile);
+      writeNumber(emptyFileBits.length, out);
+      pushBytes(emptyFileBits);
+    }
+  }
+
+  pushByte(k7zIdEnd);
+  pushByte(k7zIdEnd);
+
+  return Uint8Array.from(out);
+}
+
+async function rezipArchive() {
+  if (!moduleInstance || !wasm7z || !archiveState.entries.length) {
+    if (rezipStatus) {
+      rezipStatus.textContent = "Repack requires a loaded archive.";
+    }
+    return;
+  }
+  if (!ensureHeaps() && rezipStatus) {
+    rezipStatus.textContent = "WASM memory views unavailable. Repack may be slower.";
+  }
+
+  resetRezip();
+  if (rezipButton) {
+    rezipButton.disabled = true;
+  }
+  if (rezipStatus) {
+    rezipStatus.textContent = "Extracting files for repack...";
+  }
+
+  const entries = archiveState.entries;
+  const fileNames = entries.map((entry) => entry.name);
+  const dataFiles = [];
+  const emptyStreamEntries = [];
+
+  for (const entry of entries) {
+    if (entry.isDir || entry.size === 0) {
+      emptyStreamEntries.push(entry);
+      continue;
+    }
+    dataFiles.push(entry);
+  }
+
+  if (!dataFiles.length) {
+    if (rezipStatus) {
+      rezipStatus.textContent = "No non-empty files to repack.";
+    }
+    if (rezipButton) {
+      rezipButton.disabled = false;
+    }
+    return;
+  }
+
+  const packSizes = [];
+  const unpackSizes = [];
+  const compressedChunks = [];
+
+  for (let i = 0; i < dataFiles.length; i++) {
+    const entry = dataFiles[i];
+    if (rezipStatus) {
+      rezipStatus.textContent = `Extracting ${entry.name}...`;
+    }
+    const bytes = extractEntryBytes(entry);
+    if (rezipStatus) {
+      rezipStatus.textContent = `Compressing ${entry.name} (Zstd lvl 3)...`;
+    }
+    const compressed = compressZstd(bytes, 3);
+    compressedChunks.push(compressed);
+    packSizes.push(compressed.length);
+    unpackSizes.push(bytes.length);
+
+    if (i % 2 === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
+  const totalPacked = packSizes.reduce((sum, size) => sum + size, 0);
+  const packData = new Uint8Array(totalPacked);
+  let cursor = 0;
+  for (const chunk of compressedChunks) {
+    packData.set(chunk, cursor);
+    cursor += chunk.length;
+  }
+
+  const numFiles = fileNames.length;
+  const emptyStreamBits =
+    emptyStreamEntries.length > 0
+      ? makeBitVector(numFiles, (i) => entries[i].isDir || entries[i].size === 0)
+      : null;
+  const emptyFileBits =
+    emptyStreamEntries.length > 0
+      ? makeBitVector(emptyStreamEntries.length, (i) => !emptyStreamEntries[i].isDir)
+      : null;
+
+  const header = build7zHeader({
+    packSizes,
+    unpackSizes,
+    fileNames,
+    emptyStreamBits,
+    emptyFileBits,
+  });
+
+  const signature = Uint8Array.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]);
+  const startHeader = new Uint8Array(32);
+  startHeader.set(signature, 0);
+  startHeader[6] = 0;
+  startHeader[7] = 4;
+  writeUInt64LE(packData.length, startHeader, 12);
+  writeUInt64LE(header.length, startHeader, 20);
+  const nextHeaderCrc = crc32(header);
+  writeUInt32LE(nextHeaderCrc, startHeader, 28);
+  const startCrc = crc32(startHeader.subarray(12, 32));
+  writeUInt32LE(startCrc, startHeader, 8);
+
+  const archiveBytes = new Uint8Array(startHeader.length + packData.length + header.length);
+  archiveBytes.set(startHeader, 0);
+  archiveBytes.set(packData, startHeader.length);
+  archiveBytes.set(header, startHeader.length + packData.length);
+
+  const blob = new Blob([archiveBytes], { type: "application/x-7z-compressed" });
+  const baseName = archiveState.name ? archiveState.name.replace(/\.7z$/i, "") : "archive";
+  const outName = `${baseName}-rezip.7z`;
+  archiveState.rezipUrl = URL.createObjectURL(blob);
+  if (rezipDownload) {
+    rezipDownload.href = archiveState.rezipUrl;
+    rezipDownload.download = outName;
+    rezipDownload.hidden = false;
+    rezipDownload.textContent = `Download ${outName}`;
+  }
+  if (rezipStatus) {
+    rezipStatus.textContent = `Repacked ${dataFiles.length} file(s) into ${outName}.`;
+  }
+  if (rezipButton) {
+    rezipButton.disabled = false;
+  }
+}
+
 async function init() {
   if (typeof ZstdWasm !== "function") {
     setStatus("WASM loader missing: dist/zstd_wasm.js failed to load.");
@@ -317,6 +705,9 @@ async function init() {
     "number",
     "number",
   ]);
+  compressBoundFn = moduleInstance.cwrap("zstd_wasm_compress_bound", "number", [
+    "number",
+  ]);
   decompressFn = moduleInstance.cwrap("zstd_wasm_decompress", "number", [
     "number",
     "number",
@@ -333,9 +724,11 @@ async function init() {
     "number",
   ]);
 
-  clearTimeout(loadTimer);
   setStatus("Ready to compress.");
   runButton.disabled = false;
+  if (rezipStatus) {
+    rezipStatus.textContent = "Repack requires a loaded archive.";
+  }
 }
 
 function runCompression() {
@@ -460,6 +853,12 @@ async function openArchive(file) {
     archiveState.entries = files;
     renderArchiveList(files);
     fileStatus.textContent = `Loaded ${file.name} (${count} entries).`;
+    if (rezipStatus) {
+      rezipStatus.textContent = "Ready to repack with Zstandard level 3.";
+    }
+    if (rezipButton) {
+      rezipButton.disabled = false;
+    }
   } catch (error) {
     fileStatus.textContent = `Unable to process file: ${error.message}`;
     fileList.textContent = "Archive could not be read.";
@@ -469,6 +868,12 @@ async function openArchive(file) {
 
 runButton.addEventListener("click", runCompression);
 runButton.disabled = true;
+if (rezipButton) {
+  rezipButton.addEventListener("click", () => {
+    rezipArchive();
+  });
+  rezipButton.disabled = true;
+}
 fileInput.addEventListener("change", () => {
   if (!fileInput.files?.length) {
     fileStatus.textContent = "No archive loaded.";
