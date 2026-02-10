@@ -13,5 +13,4 @@
 **/x86-bin
 **/x64-bin
 **/arm64-bin
-wasm/dist
 emsdk/
