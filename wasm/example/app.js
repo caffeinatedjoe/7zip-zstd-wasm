@@ -22,6 +22,14 @@ const utf8Decoder = new TextDecoder();
 const utf16Decoder = new TextDecoder("utf-16le");
 const SZ_ERROR_WRONG_PASSWORD = 0x80100015;
 const SZ_ERROR_ENCRYPTION_UNSUPPORTED = 0x80100016;
+const WASM7Z_STREAM_ERR_INVALID_INDEX = 10001;
+const WASM7Z_STREAM_ERR_INVALID_STATE = 10002;
+const WASM7Z_STREAM_ERR_UNSUPPORTED_METHOD = 10003;
+const WASM7Z_STREAM_ERR_DECODE = 10004;
+const WASM7Z_STREAM_ERR_ALLOC = 10005;
+const WASM7Z_STREAM_ERR_BAD_ARGUMENT = 10006;
+const STREAMING_THRESHOLD_BYTES = 128 * 1024 * 1024;
+const STREAM_CHUNK_BYTES = 4 * 1024 * 1024;
 
 let moduleInstance;
 let compressFn;
@@ -33,6 +41,8 @@ let errorNameFn;
 let wasm7z;
 let heapBuffer = null;
 let hasMemoryViews = false;
+let streamChunkPtr = 0;
+let streamChunkCapacity = 0;
 const archiveState = {
   ptr: 0,
   size: 0,
@@ -180,6 +190,11 @@ function resetArchiveState() {
     wasm7z.close();
     moduleInstance._free(archiveState.ptr);
   }
+  if (streamChunkPtr && moduleInstance) {
+    moduleInstance._free(streamChunkPtr);
+    streamChunkPtr = 0;
+    streamChunkCapacity = 0;
+  }
   archiveState.ptr = 0;
   archiveState.size = 0;
   archiveState.name = "";
@@ -257,37 +272,14 @@ function extractEntry(entry) {
 
   resetDownload();
   fileStatus.textContent = `Extracting ${entry.name}...`;
-
-  const capacity = entry.size > 0 ? entry.size : 1;
-  const dstPtr = moduleInstance._malloc(capacity);
-  const sizePtr = moduleInstance._malloc(4);
-
-  if (!dstPtr || !sizePtr) {
-    fileStatus.textContent = "Unable to allocate memory for extraction.";
-    if (dstPtr) moduleInstance._free(dstPtr);
-    if (sizePtr) moduleInstance._free(sizePtr);
+  let resultBytes;
+  try {
+    resultBytes = extractEntryBytes(entry);
+  } catch (error) {
+    fileStatus.textContent = error.message || "Extraction failed.";
     return;
   }
-
-  moduleInstance.setValue(sizePtr, 0, "i32");
-  const result = wasm7z.extract(entry.index, dstPtr, capacity, sizePtr);
-  if (result !== 0) {
-    if (result === SZ_ERROR_ENCRYPTION_UNSUPPORTED) {
-      fileStatus.textContent =
-        "Extraction failed: encrypted 7z payload (7zAES) is not supported in this WASM build.";
-    } else {
-      fileStatus.textContent = `Extraction failed (${result}).`;
-    }
-    moduleInstance._free(dstPtr);
-    moduleInstance._free(sizePtr);
-    return;
-  }
-
-  const actualSize = moduleInstance.getValue(sizePtr, "i32") >>> 0;
-  const resultBytes = readBytes(dstPtr, actualSize);
-
-  moduleInstance._free(dstPtr);
-  moduleInstance._free(sizePtr);
+  const actualSize = resultBytes.length;
 
   const previewBytes = resultBytes.subarray(0, 64 * 1024);
   if (looksLikeText(previewBytes)) {
@@ -309,7 +301,90 @@ function extractEntry(entry) {
   fileStatus.textContent = `Extracted ${entry.name} (${formatBytes(actualSize)})`;
 }
 
+function ensureStreamChunkBuffer() {
+  if (streamChunkPtr && streamChunkCapacity >= STREAM_CHUNK_BYTES) {
+    return streamChunkPtr;
+  }
+  if (streamChunkPtr) {
+    moduleInstance._free(streamChunkPtr);
+    streamChunkPtr = 0;
+    streamChunkCapacity = 0;
+  }
+  streamChunkPtr = moduleInstance._malloc(STREAM_CHUNK_BYTES);
+  if (!streamChunkPtr) {
+    throw new Error("Unable to allocate streaming chunk buffer.");
+  }
+  streamChunkCapacity = STREAM_CHUNK_BYTES;
+  return streamChunkPtr;
+}
+
+function formatStreamError(code) {
+  if (code === WASM7Z_STREAM_ERR_INVALID_INDEX) return "invalid index";
+  if (code === WASM7Z_STREAM_ERR_INVALID_STATE) return "invalid extraction state";
+  if (code === WASM7Z_STREAM_ERR_UNSUPPORTED_METHOD) return "unsupported coder chain for streaming";
+  if (code === WASM7Z_STREAM_ERR_DECODE) return "decode failure";
+  if (code === WASM7Z_STREAM_ERR_ALLOC) return "allocation failure";
+  if (code === WASM7Z_STREAM_ERR_BAD_ARGUMENT) return "bad argument";
+  return `code ${code}`;
+}
+
+function extractEntryStreamingBytes(entry) {
+  const producedPtr = moduleInstance._malloc(4);
+  const donePtr = moduleInstance._malloc(4);
+  let beginOk = false;
+  if (!producedPtr || !donePtr) {
+    if (producedPtr) moduleInstance._free(producedPtr);
+    if (donePtr) moduleInstance._free(donePtr);
+    throw new Error("Unable to allocate streaming state pointers.");
+  }
+
+  try {
+    const chunkPtr = ensureStreamChunkBuffer();
+    const chunks = [];
+    const beginRes = wasm7z.extractBegin(entry.index);
+    if (beginRes !== 0) {
+      throw new Error(`Streaming begin failed (${formatStreamError(beginRes)}).`);
+    }
+    beginOk = true;
+
+    while (true) {
+      moduleInstance.setValue(producedPtr, 0, "i32");
+      moduleInstance.setValue(donePtr, 0, "i32");
+      const readRes = wasm7z.extractRead(chunkPtr, streamChunkCapacity, producedPtr, donePtr);
+      if (readRes !== 0) {
+        throw new Error(`Streaming read failed (${formatStreamError(readRes)}).`);
+      }
+      const produced = moduleInstance.getValue(producedPtr, "i32") >>> 0;
+      if (produced > 0) {
+        chunks.push(readBytes(chunkPtr, produced));
+      }
+      const done = moduleInstance.getValue(donePtr, "i32") | 0;
+      if (done !== 0) {
+        break;
+      }
+    }
+
+    const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    const out = new Uint8Array(total);
+    let cursor = 0;
+    for (const chunk of chunks) {
+      out.set(chunk, cursor);
+      cursor += chunk.length;
+    }
+    return out;
+  } finally {
+    if (beginOk) {
+      wasm7z.extractEnd();
+    }
+    moduleInstance._free(producedPtr);
+    moduleInstance._free(donePtr);
+  }
+}
+
 function extractEntryBytes(entry) {
+  if (entry.size >= STREAMING_THRESHOLD_BYTES) {
+    return extractEntryStreamingBytes(entry);
+  }
   const capacity = entry.size > 0 ? entry.size : 1;
   const dstPtr = moduleInstance._malloc(capacity);
   const sizePtr = moduleInstance._malloc(4);
@@ -724,6 +799,9 @@ async function init() {
     isDirectory: moduleInstance.cwrap("wasm7z_is_directory", "number", ["number"]),
     fileSize: moduleInstance.cwrap("wasm7z_file_size", "number", ["number"]),
     extract: moduleInstance.cwrap("wasm7z_extract", "number", ["number", "number", "number", "number"]),
+    extractBegin: moduleInstance.cwrap("wasm7z_extract_begin", "number", ["number"]),
+    extractRead: moduleInstance.cwrap("wasm7z_extract_read", "number", ["number", "number", "number", "number"]),
+    extractEnd: moduleInstance.cwrap("wasm7z_extract_end", "number", []),
     hasEncryptedContent: moduleInstance.cwrap("wasm7z_has_encrypted_content", "number", []),
   };
   compressFn = moduleInstance.cwrap("zstd_wasm_compress", "number", [

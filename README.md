@@ -81,6 +81,27 @@ The example page in `wasm/example/app.js` shows the full end-to-end wiring
 - A return value of `0` still means success; the special error code `0x80100015` indicates an authentication failure (wrong password).
 - `wasm7z_has_encrypted_content()` returns `1` when the archive contains 7z AES payload coders, so apps can enforce a password flow before extraction.
 
+### Streaming Extraction API
+
+For large entries, use the chunked extraction lifecycle:
+
+- `wasm7z_extract_begin(index)`
+- `wasm7z_extract_read(out_ptr, out_capacity, produced_ptr, done_ptr)`
+- `wasm7z_extract_end()`
+
+`read` writes up to `out_capacity` bytes per call, stores the count in `*produced_ptr`, and sets `*done_ptr` to `1` once the entry is fully emitted.
+
+Deterministic streaming error codes:
+
+- `10001`: invalid index
+- `10002`: invalid extraction state
+- `10003`: unsupported coder chain for streaming
+- `10004`: decode failure
+- `10005`: allocation failure
+- `10006`: bad argument
+
+Current streaming coverage is optimized for 7z folders with a single pack stream and a single main coder (`Copy` or `Zstd`). One-shot extraction (`wasm7z_extract`) remains unchanged for existing consumers.
+
 ## Build
 
 ### Prerequisites

@@ -13,6 +13,20 @@ The `zstd_wasm.c` wrapper exports these symbols:
 - `zstd_wasm_is_error(code)`
 - `zstd_wasm_get_error_name(code)`
 
+7z extraction exports:
+
+- `wasm7z_open(data_ptr, size)`
+- `wasm7z_open_with_password(data_ptr, size, password_utf8)`
+- `wasm7z_close()`
+- `wasm7z_file_count()`
+- `wasm7z_fetch_name(index)`
+- `wasm7z_name_buffer()`
+- `wasm7z_name_length()`
+- `wasm7z_is_directory(index)`
+- `wasm7z_file_size(index)`
+- `wasm7z_extract(index, dst_ptr, dst_capacity, out_size_ptr)` (one-shot)
+- `wasm7z_extract_begin(index)` / `wasm7z_extract_read(...)` / `wasm7z_extract_end()` (streaming)
+
 ## Build
 
 You need [Emscripten](https://emscripten.org/) installed and in your PATH.

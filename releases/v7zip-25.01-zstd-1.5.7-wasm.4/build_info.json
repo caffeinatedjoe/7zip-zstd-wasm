@@ -1,0 +1,45 @@
+﻿{
+    "release":  "v7zip-25.01-zstd-1.5.7-wasm.4",
+    "workspace":  {
+                      "commit":  "40bd5f0e",
+                      "dirty":  true
+                  },
+    "7zip":  {
+                 "version":  "25.01",
+                 "commit":  "40bd5f0e"
+             },
+    "zstd":  {
+                 "version":  "1.5.7",
+                 "commit":  "40bd5f0e"
+             },
+    "emscripten":  "5.0.0",
+    "build_script":  {
+                         "file":  "build.sh",
+                         "commit":  "a2f9ccef"
+                     },
+    "artifacts":  {
+                      "js":  {
+                                 "file":  "zstd_wasm.js",
+                                 "sha256":  "2fcd9433113fd1f93d4157386ed6d6f9087fce4cd24507c5acbcea57d954d343"
+                             },
+                      "wasm":  {
+                                   "file":  "zstd_wasm.wasm",
+                                   "sha256":  "9ff55d123378a354989ac4b1260f713ee6779280e29d585f15123007107bd38b"
+                               }
+                  },
+    "flags":  [
+                  "-O3",
+                  "-s ALLOW_MEMORY_GROWTH=1",
+                  "-s MODULARIZE=1",
+                  "-s EXPORT_NAME=ZstdWasm",
+                  "-s ENVIRONMENT=web,worker,node",
+                  "-s EXPORTED_FUNCTIONS=[\u0027_zstd_wasm_compress\u0027,\u0027_zstd_wasm_compress_bound\u0027,\u0027_zstd_wasm_decompress\u0027,\u0027_zstd_wasm_get_frame_content_size\u0027,\u0027_zstd_wasm_is_error\u0027,\u0027_zstd_wasm_get_error_name\u0027,\u0027_wasm7z_open\u0027,\u0027_wasm7z_open_with_password\u0027,\u0027_wasm7z_close\u0027,\u0027_wasm7z_file_count\u0027,\u0027_wasm7z_fetch_name\u0027,\u0027_wasm7z_name_buffer\u0027,\u0027_wasm7z_name_length\u0027,\u0027_wasm7z_is_directory\u0027,\u0027_wasm7z_file_size\u0027,\u0027_wasm7z_extract\u0027,\u0027_wasm7z_extract_begin\u0027,\u0027_wasm7z_extract_read\u0027,\u0027_wasm7z_extract_end\u0027,\u0027_wasm7z_has_encrypted_content\u0027,\u0027_malloc\u0027,\u0027_free\u0027]",
+                  "-s EXPORTED_RUNTIME_METHODS=[\u0027cwrap\u0027,\u0027getValue\u0027,\u0027setValue\u0027]"
+              ],
+    "notes":  [
+                  "Added streaming extraction API (begin/read/end) with bounded memory for large zstd entries.",
+                  "Preserved one-shot extraction API compatibility while exporting new streaming symbols.",
+                  "Updated example app to use streaming path above threshold with fixed reusable chunk buffer."
+              ],
+    "date":  "2026-02-12"
+}

@@ -5,11 +5,22 @@
 
 #include "../C/7z.h"
 #include "../C/7zCrc.h"
+#include "../C/zstd/zstd.h"
 
 #define LOOK_BUFFER_SIZE (1 << 16)
+#define STREAM_IO_BUFFER_SIZE (1 << 16)
 #define SZ_ERROR_WRONG_PASSWORD ((SRes)0x80100015)
 #define SZ_ERROR_ENCRYPTION_UNSUPPORTED ((SRes)0x80100016)
 #define METHOD_ID_7Z_AES ((UInt32)0x06F10701)
+#define METHOD_ID_COPY ((UInt32)0x00000000)
+#define METHOD_ID_ZSTD ((UInt32)0x04F71101)
+
+#define WASM7Z_STREAM_ERR_INVALID_INDEX 10001
+#define WASM7Z_STREAM_ERR_INVALID_STATE 10002
+#define WASM7Z_STREAM_ERR_UNSUPPORTED_METHOD 10003
+#define WASM7Z_STREAM_ERR_DECODE 10004
+#define WASM7Z_STREAM_ERR_ALLOC 10005
+#define WASM7Z_STREAM_ERR_BAD_ARGUMENT 10006
 
 typedef struct {
   ISeekInStream vt;
@@ -36,6 +47,32 @@ static char *g_passwordUtf8 = NULL;
 static size_t g_passwordUtf8Len = 0;
 static UInt16 *g_passwordUtf16 = NULL;
 static size_t g_passwordUtf16Len = 0;
+
+typedef enum {
+  STREAM_METHOD_NONE = 0,
+  STREAM_METHOD_COPY = 1,
+  STREAM_METHOD_ZSTD = 2,
+} StreamMethod;
+
+typedef struct {
+  int active;
+  StreamMethod method;
+  UInt32 fileIndex;
+  UInt64 fileRemaining;
+  UInt64 skipRemaining;
+  UInt32 crcValue;
+  int hasExpectedCrc;
+  UInt32 expectedCrc;
+
+  const Byte *src;
+  size_t srcSize;
+  size_t srcPos;
+
+  ZSTD_DStream *zstd;
+  Byte zstdSkipBuffer[STREAM_IO_BUFFER_SIZE];
+} StreamExtractState;
+
+static StreamExtractState g_streamState = {0};
 
 EMSCRIPTEN_KEEPALIVE int wasm7z_open_with_password(const uint8_t *data, size_t size, const char *password);
 
@@ -93,16 +130,242 @@ static void MemInStream_Init(CMemInStream *self, const Byte *data, size_t size) 
 extern void LookToRead2_CreateVTable(CLookToRead2 *p, int lookahead);
 
 static void ResetArchiveState(void) {
+  if (g_outBuffer) {
+    free(g_outBuffer);
+    g_outBuffer = NULL;
+  }
+  if (g_streamState.zstd) {
+    ZSTD_freeDStream(g_streamState.zstd);
+    g_streamState.zstd = NULL;
+  }
+  memset(&g_streamState, 0, sizeof(g_streamState));
   if (g_archiveBuffer) {
     free(g_archiveBuffer);
     g_archiveBuffer = NULL;
   }
   SzArEx_Free(&g_archive, &g_allocImp);
-  g_outBuffer = NULL;
   g_outBufferSize = 0;
   g_blockIndex = (UInt32)(Int32)-1;
   g_isOpen = 0;
   g_hasEncryptedContent = 0;
+}
+
+static int StreamReset(void) {
+  if (g_streamState.zstd) {
+    ZSTD_freeDStream(g_streamState.zstd);
+    g_streamState.zstd = NULL;
+  }
+  memset(&g_streamState, 0, sizeof(g_streamState));
+  return SZ_OK;
+}
+
+static int LoadFolderForFile(UInt32 fileIndex, CSzFolder *folder) {
+  const UInt32 folderIndex = g_archive.FileToFolder[fileIndex];
+  const Byte *folderData;
+  if (folderIndex == (UInt32)-1) {
+    return WASM7Z_STREAM_ERR_INVALID_INDEX;
+  }
+  folderData = g_archive.db.CodersData + g_archive.db.FoCodersOffsets[folderIndex];
+  {
+    CSzData sd;
+    sd.Data = folderData;
+    sd.Size = g_archive.db.FoCodersOffsets[(size_t)folderIndex + 1] - g_archive.db.FoCodersOffsets[folderIndex];
+    if (SzGetNextFolderItem(folder, &sd) != SZ_OK || sd.Size != 0) {
+      return WASM7Z_STREAM_ERR_DECODE;
+    }
+  }
+  return SZ_OK;
+}
+
+static int ConfigureStreamingForFile(UInt32 fileIndex) {
+  UInt32 folderIndex;
+  UInt64 fileStartPos;
+  UInt64 folderStartPos;
+  UInt64 fileSize;
+  UInt64 folderPackOffset;
+  UInt64 folderPackSize;
+  UInt64 absolutePackOffset;
+  const UInt64 *packPositions;
+  CSzFolder folder;
+  int result;
+
+  result = StreamReset();
+  if (result != SZ_OK) {
+    return result;
+  }
+
+  fileStartPos = g_archive.UnpackPositions[fileIndex];
+  fileSize = g_archive.UnpackPositions[(size_t)fileIndex + 1] - fileStartPos;
+  g_streamState.active = 1;
+  g_streamState.fileIndex = fileIndex;
+  g_streamState.fileRemaining = fileSize;
+  g_streamState.crcValue = CRC_INIT_VAL;
+  g_streamState.hasExpectedCrc = 0;
+  if (SzBitWithVals_Check(&g_archive.CRCs, fileIndex)) {
+    g_streamState.hasExpectedCrc = 1;
+    g_streamState.expectedCrc = g_archive.CRCs.Vals[fileIndex];
+  }
+
+  folderIndex = g_archive.FileToFolder[fileIndex];
+  if (folderIndex == (UInt32)-1) {
+    g_streamState.method = STREAM_METHOD_NONE;
+    g_streamState.skipRemaining = 0;
+    return SZ_OK;
+  }
+
+  result = LoadFolderForFile(fileIndex, &folder);
+  if (result != SZ_OK) {
+    StreamReset();
+    return result;
+  }
+
+  if (folder.NumPackStreams != 1 || folder.NumCoders != 1 || folder.UnpackStream != 0 || folder.PackStreams[0] != 0) {
+    StreamReset();
+    return WASM7Z_STREAM_ERR_UNSUPPORTED_METHOD;
+  }
+
+  folderStartPos = g_archive.UnpackPositions[g_archive.FolderToFile[folderIndex]];
+  g_streamState.skipRemaining = fileStartPos - folderStartPos;
+
+  packPositions = g_archive.db.PackPositions + g_archive.db.FoStartPackStreamIndex[folderIndex];
+  folderPackOffset = packPositions[0];
+  folderPackSize = packPositions[1] - packPositions[0];
+  absolutePackOffset = g_archive.dataPos + folderPackOffset;
+  if (absolutePackOffset > g_archiveSize || folderPackSize > (UInt64)(g_archiveSize - (size_t)absolutePackOffset)) {
+    StreamReset();
+    return WASM7Z_STREAM_ERR_DECODE;
+  }
+  g_streamState.src = g_archiveBuffer + (size_t)absolutePackOffset;
+  g_streamState.srcSize = (size_t)folderPackSize;
+  g_streamState.srcPos = 0;
+
+  if (folder.Coders[0].MethodID == METHOD_ID_COPY) {
+    g_streamState.method = STREAM_METHOD_COPY;
+    return SZ_OK;
+  }
+  if (folder.Coders[0].MethodID == METHOD_ID_ZSTD) {
+    size_t initRes;
+    g_streamState.zstd = ZSTD_createDStream();
+    if (!g_streamState.zstd) {
+      StreamReset();
+      return WASM7Z_STREAM_ERR_ALLOC;
+    }
+    initRes = ZSTD_initDStream(g_streamState.zstd);
+    if (ZSTD_isError(initRes)) {
+      StreamReset();
+      return WASM7Z_STREAM_ERR_DECODE;
+    }
+    g_streamState.method = STREAM_METHOD_ZSTD;
+    return SZ_OK;
+  }
+
+  StreamReset();
+  return WASM7Z_STREAM_ERR_UNSUPPORTED_METHOD;
+}
+
+static int StreamFinalizeIfDone(void) {
+  if (!g_streamState.active || g_streamState.fileRemaining != 0) {
+    return SZ_OK;
+  }
+  if (g_streamState.hasExpectedCrc && CRC_GET_DIGEST(g_streamState.crcValue) != g_streamState.expectedCrc) {
+    StreamReset();
+    return SZ_ERROR_CRC;
+  }
+  return SZ_OK;
+}
+
+static int StreamReadCopy(Byte *out, uint32_t outCapacity, uint32_t *produced, int *done) {
+  uint32_t written = 0;
+  while (written < outCapacity && g_streamState.fileRemaining > 0) {
+    size_t available = g_streamState.srcSize - g_streamState.srcPos;
+    size_t take;
+    if (available == 0) {
+      return WASM7Z_STREAM_ERR_DECODE;
+    }
+    if (g_streamState.skipRemaining > 0) {
+      size_t skip = available;
+      if ((UInt64)skip > g_streamState.skipRemaining) {
+        skip = (size_t)g_streamState.skipRemaining;
+      }
+      g_streamState.srcPos += skip;
+      g_streamState.skipRemaining -= skip;
+      continue;
+    }
+    take = outCapacity - written;
+    if ((UInt64)take > g_streamState.fileRemaining) {
+      take = (size_t)g_streamState.fileRemaining;
+    }
+    if (take > available) {
+      take = available;
+    }
+    if (take == 0) {
+      break;
+    }
+    memcpy(out + written, g_streamState.src + g_streamState.srcPos, take);
+    g_streamState.crcValue = CrcUpdate(g_streamState.crcValue, out + written, take);
+    g_streamState.srcPos += take;
+    written += (uint32_t)take;
+    g_streamState.fileRemaining -= take;
+  }
+  *produced = written;
+  *done = (g_streamState.fileRemaining == 0) ? 1 : 0;
+  return StreamFinalizeIfDone();
+}
+
+static int StreamReadZstd(Byte *out, uint32_t outCapacity, uint32_t *produced, int *done) {
+  uint32_t written = 0;
+  while (written < outCapacity && g_streamState.fileRemaining > 0) {
+    ZSTD_inBuffer inBuf;
+    ZSTD_outBuffer outBuf;
+    size_t beforeIn;
+    size_t decodeRes;
+    if (g_streamState.srcPos > g_streamState.srcSize) {
+      return WASM7Z_STREAM_ERR_DECODE;
+    }
+    inBuf.src = g_streamState.src;
+    inBuf.size = g_streamState.srcSize;
+    inBuf.pos = g_streamState.srcPos;
+
+    if (g_streamState.skipRemaining > 0) {
+      size_t skipCap = sizeof(g_streamState.zstdSkipBuffer);
+      if ((UInt64)skipCap > g_streamState.skipRemaining) {
+        skipCap = (size_t)g_streamState.skipRemaining;
+      }
+      outBuf.dst = g_streamState.zstdSkipBuffer;
+      outBuf.size = skipCap;
+      outBuf.pos = 0;
+    } else {
+      size_t targetCap = outCapacity - written;
+      if ((UInt64)targetCap > g_streamState.fileRemaining) {
+        targetCap = (size_t)g_streamState.fileRemaining;
+      }
+      outBuf.dst = out + written;
+      outBuf.size = targetCap;
+      outBuf.pos = 0;
+    }
+
+    beforeIn = inBuf.pos;
+    decodeRes = ZSTD_decompressStream(g_streamState.zstd, &outBuf, &inBuf);
+    if (ZSTD_isError(decodeRes)) {
+      return WASM7Z_STREAM_ERR_DECODE;
+    }
+    g_streamState.srcPos = inBuf.pos;
+
+    if (g_streamState.skipRemaining > 0) {
+      g_streamState.skipRemaining -= outBuf.pos;
+    } else if (outBuf.pos > 0) {
+      g_streamState.crcValue = CrcUpdate(g_streamState.crcValue, out + written, outBuf.pos);
+      written += (uint32_t)outBuf.pos;
+      g_streamState.fileRemaining -= outBuf.pos;
+    }
+
+    if (outBuf.pos == 0 && inBuf.pos == beforeIn) {
+      return WASM7Z_STREAM_ERR_DECODE;
+    }
+  }
+  *produced = written;
+  *done = (g_streamState.fileRemaining == 0) ? 1 : 0;
+  return StreamFinalizeIfDone();
 }
 
 static int ArchiveHas7zAes(const CSzArEx *archive) {
@@ -320,6 +583,60 @@ EMSCRIPTEN_KEEPALIVE int wasm7z_extract(int index, uint8_t *dst, size_t dstCapac
     return SZ_ERROR_ENCRYPTION_UNSUPPORTED;
   }
   return res;
+}
+
+EMSCRIPTEN_KEEPALIVE int wasm7z_extract_begin(int index) {
+  if (!g_isOpen)
+    return WASM7Z_STREAM_ERR_INVALID_STATE;
+  if (g_streamState.active)
+    return WASM7Z_STREAM_ERR_INVALID_STATE;
+  if (index < 0 || (size_t)index >= g_archive.NumFiles)
+    return WASM7Z_STREAM_ERR_INVALID_INDEX;
+  return ConfigureStreamingForFile((UInt32)index);
+}
+
+EMSCRIPTEN_KEEPALIVE int wasm7z_extract_read(int out_ptr, uint32_t out_capacity, uint32_t *produced, int *done) {
+  Byte *outBuffer;
+  int res;
+  if (!produced || !done)
+    return WASM7Z_STREAM_ERR_BAD_ARGUMENT;
+  *produced = 0;
+  *done = 0;
+  if (!g_isOpen || !g_streamState.active)
+    return WASM7Z_STREAM_ERR_INVALID_STATE;
+  if (out_capacity > 0 && out_ptr == 0)
+    return WASM7Z_STREAM_ERR_BAD_ARGUMENT;
+  if (g_streamState.fileRemaining == 0) {
+    *done = 1;
+    return StreamFinalizeIfDone();
+  }
+  if (out_capacity == 0)
+    return SZ_OK;
+
+  outBuffer = (Byte *)(uintptr_t)out_ptr;
+  if (g_streamState.method == STREAM_METHOD_NONE) {
+    *done = 1;
+    return SZ_OK;
+  }
+  if (g_streamState.method == STREAM_METHOD_COPY) {
+    res = StreamReadCopy(outBuffer, out_capacity, produced, done);
+  } else if (g_streamState.method == STREAM_METHOD_ZSTD) {
+    res = StreamReadZstd(outBuffer, out_capacity, produced, done);
+  } else {
+    return WASM7Z_STREAM_ERR_INVALID_STATE;
+  }
+  if (res != SZ_OK) {
+    StreamReset();
+  }
+  return res;
+}
+
+EMSCRIPTEN_KEEPALIVE int wasm7z_extract_end(void) {
+  if (!g_isOpen)
+    return WASM7Z_STREAM_ERR_INVALID_STATE;
+  if (!g_streamState.active)
+    return WASM7Z_STREAM_ERR_INVALID_STATE;
+  return StreamReset();
 }
 
 EMSCRIPTEN_KEEPALIVE int wasm7z_has_encrypted_content(void) {
