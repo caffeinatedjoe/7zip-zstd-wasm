@@ -89,6 +89,16 @@
         background: #0b1220;
         color: inherit;
       }
+      input[type="password"] {
+        width: 100%;
+        margin-top: 0.25rem;
+        padding: 0.5rem 0.75rem;
+        border-radius: 8px;
+        border: 1px solid #475569;
+        background: #0b1220;
+        color: inherit;
+        font-size: 1rem;
+      }
       .file-status {
         margin-top: 0.5rem;
         font-size: 0.9rem;
@@ -203,6 +213,9 @@
       <div class="file-section">
         <label class="input-group" for="file-input">Open a .7z archive</label>
         <input type="file" id="file-input" accept=".7z" />
+        <label class="input-group" for="archive-password">Archive password (optional)</label>
+        <input type="password" id="archive-password" placeholder="Leave blank for archives without encryption" />
+        <div class="file-status" id="password-hint">Provide a password if the archive is encrypted.</div>
         <div class="file-status" id="file-status">No archive loaded.</div>
         <div class="file-list" id="file-list">Upload a .7z to see its entries.</div>
         <div class="file-preview">

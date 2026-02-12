@@ -199,6 +199,13 @@ SZ_ERROR_FAIL
 SRes SzArEx_Open(CSzArEx *p, ILookInStreamPtr inStream,
     ISzAllocPtr allocMain, ISzAllocPtr allocTemp);
 
+/*
+  Password for 7z AES decoding.
+  The password bytes are UTF-16LE as used by 7z crypto.
+*/
+void SzAr_SetPassword(const Byte *password, size_t passwordSize);
+int SzAr_HasPassword(void);
+
 EXTERN_C_END
 
 #endif

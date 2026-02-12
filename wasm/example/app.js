@@ -13,11 +13,15 @@ const downloadLink = document.getElementById("file-download");
 const rezipButton = document.getElementById("rezip-button");
 const rezipStatus = document.getElementById("rezip-status");
 const rezipDownload = document.getElementById("rezip-download");
+const passwordInput = document.getElementById("archive-password");
+const passwordHint = document.getElementById("password-hint");
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const utf8Decoder = new TextDecoder();
 const utf16Decoder = new TextDecoder("utf-16le");
+const SZ_ERROR_WRONG_PASSWORD = 0x80100015;
+const SZ_ERROR_ENCRYPTION_UNSUPPORTED = 0x80100016;
 
 let moduleInstance;
 let compressFn;
@@ -47,6 +51,14 @@ function formatRatio(inputSize, compressedSize) {
 
 function setStatus(message) {
   statusEl.textContent = message;
+}
+
+function updatePasswordHint() {
+  if (!passwordHint || !passwordInput) return;
+  const trimmed = passwordInput.value.trim();
+  passwordHint.textContent = trimmed
+    ? "Using the supplied password to unlock the archive."
+    : "Leave the field empty when opening unencrypted archives.";
 }
 
 function getWasmMemory() {
@@ -260,7 +272,12 @@ function extractEntry(entry) {
   moduleInstance.setValue(sizePtr, 0, "i32");
   const result = wasm7z.extract(entry.index, dstPtr, capacity, sizePtr);
   if (result !== 0) {
-    fileStatus.textContent = `Extraction failed (${result}).`;
+    if (result === SZ_ERROR_ENCRYPTION_UNSUPPORTED) {
+      fileStatus.textContent =
+        "Extraction failed: encrypted 7z payload (7zAES) is not supported in this WASM build.";
+    } else {
+      fileStatus.textContent = `Extraction failed (${result}).`;
+    }
     moduleInstance._free(dstPtr);
     moduleInstance._free(sizePtr);
     return;
@@ -308,6 +325,9 @@ function extractEntryBytes(entry) {
   if (result !== 0) {
     moduleInstance._free(dstPtr);
     moduleInstance._free(sizePtr);
+    if (result === SZ_ERROR_ENCRYPTION_UNSUPPORTED) {
+      throw new Error("Extraction failed: encrypted 7z payload (7zAES) is not supported in this WASM build.");
+    }
     throw new Error(`Extraction failed (${result}).`);
   }
 
@@ -670,6 +690,8 @@ async function init() {
     setStatus("Loading WASM...");
     const moduleConfig = {
       locateFile: (path) => new URL(path, baseUrl).toString(),
+      print: (text) => console.log(`[wasm] ${text}`),
+      printErr: (text) => console.error(`[wasm] ${text}`),
     };
     const maybePromise = ZstdWasm(moduleConfig);
     moduleInstance =
@@ -689,6 +711,11 @@ async function init() {
   }
   wasm7z = {
     open: moduleInstance.cwrap("wasm7z_open", "number", ["number", "number"]),
+    openWithPassword: moduleInstance.cwrap("wasm7z_open_with_password", "number", [
+      "number",
+      "number",
+      "string",
+    ]),
     close: moduleInstance.cwrap("wasm7z_close", "void", []),
     fileCount: moduleInstance.cwrap("wasm7z_file_count", "number", []),
     fetchName: moduleInstance.cwrap("wasm7z_fetch_name", "number", ["number"]),
@@ -697,6 +724,7 @@ async function init() {
     isDirectory: moduleInstance.cwrap("wasm7z_is_directory", "number", ["number"]),
     fileSize: moduleInstance.cwrap("wasm7z_file_size", "number", ["number"]),
     extract: moduleInstance.cwrap("wasm7z_extract", "number", ["number", "number", "number", "number"]),
+    hasEncryptedContent: moduleInstance.cwrap("wasm7z_has_encrypted_content", "number", []),
   };
   compressFn = moduleInstance.cwrap("zstd_wasm_compress", "number", [
     "number",
@@ -827,10 +855,23 @@ async function openArchive(file) {
     archiveState.size = srcBytes.length;
     archiveState.name = file.name;
 
-    const openRes = wasm7z.open(archiveState.ptr, srcBytes.length);
+    const password = passwordInput?.value?.trim() || "";
+    if (passwordHint) {
+      passwordHint.textContent = password
+        ? "Trying the supplied password..."
+        : "Opening archive without a password.";
+    }
+    const openRes = password
+      ? wasm7z.openWithPassword(archiveState.ptr, srcBytes.length, password)
+      : wasm7z.open(archiveState.ptr, srcBytes.length);
     if (openRes !== 0) {
-      fileStatus.textContent = `Unable to open archive (${openRes}).`;
-      fileList.textContent = "Archive could not be opened.";
+      if (openRes === SZ_ERROR_WRONG_PASSWORD) {
+        fileStatus.textContent = "Incorrect password.";
+        fileList.textContent = "Failed to unlock the archive payload.";
+      } else {
+        fileStatus.textContent = `Unable to open archive (${openRes}).`;
+        fileList.textContent = "Archive could not be opened.";
+      }
       resetArchiveState();
       return;
     }
@@ -852,7 +893,14 @@ async function openArchive(file) {
 
     archiveState.entries = files;
     renderArchiveList(files);
-    fileStatus.textContent = `Loaded ${file.name} (${count} entries).`;
+    const hasEncryptedContent = !!wasm7z.hasEncryptedContent();
+    if (hasEncryptedContent && !password) {
+      fileStatus.textContent = `Loaded ${file.name} (${count} entries). Encrypted payload detected; enter a password and reopen to extract.`;
+    } else {
+      fileStatus.textContent = password
+        ? `Loaded ${file.name} (${count} entries) using a password.`
+        : `Loaded ${file.name} (${count} entries).`;
+    }
     if (rezipStatus) {
       rezipStatus.textContent = "Ready to repack with Zstandard level 3.";
     }
@@ -873,6 +921,10 @@ if (rezipButton) {
     rezipArchive();
   });
   rezipButton.disabled = true;
+}
+if (passwordInput) {
+  passwordInput.addEventListener("input", updatePasswordHint);
+  updatePasswordHint();
 }
 fileInput.addEventListener("change", () => {
   if (!fileInput.files?.length) {

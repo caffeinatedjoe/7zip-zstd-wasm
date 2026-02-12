@@ -1,0 +1,41 @@
+{
+    "release":  "v7zip-25.01-zstd-1.5.7-wasm.3",
+    "workspace":  {
+                      "commit":  "af1e8da9",
+                      "dirty":  true
+                  },
+    "7zip":  {
+                 "version":  "25.01",
+                 "commit":  "23aa522e"
+             },
+    "zstd":  {
+                 "version":  "1.5.7",
+                 "commit":  "23aa522e"
+             },
+    "emscripten":  "5.0.0",
+    "artifacts":  {
+                      "js":  {
+                                 "file":  "zstd_wasm.js",
+                                 "sha256":  "467618ec428bbf99a6a6da3245b54a57c6bc75d7f46c28be83ce64be84530b84"
+                             },
+                      "wasm":  {
+                                   "file":  "zstd_wasm.wasm",
+                                   "sha256":  "219601bfcfe4d00a876a94c8305e1763711f611f5dd1083855940b3f53a20e95"
+                               }
+                  },
+    "flags":  [
+                  "-O3",
+                  "-s ALLOW_MEMORY_GROWTH=1",
+                  "-s MODULARIZE=1",
+                  "-s EXPORT_NAME=ZstdWasm",
+                  "-s ENVIRONMENT=web,worker,node",
+                  "-s EXPORTED_FUNCTIONS=[\u0027_zstd_wasm_compress\u0027,\u0027_zstd_wasm_compress_bound\u0027,\u0027_zstd_wasm_decompress\u0027,\u0027_zstd_wasm_get_frame_content_size\u0027,\u0027_zstd_wasm_is_error\u0027,\u0027_zstd_wasm_get_error_name\u0027,\u0027_wasm7z_open\u0027,\u0027_wasm7z_open_with_password\u0027,\u0027_wasm7z_close\u0027,\u0027_wasm7z_file_count\u0027,\u0027_wasm7z_fetch_name\u0027,\u0027_wasm7z_name_buffer\u0027,\u0027_wasm7z_name_length\u0027,\u0027_wasm7z_is_directory\u0027,\u0027_wasm7z_file_size\u0027,\u0027_wasm7z_extract\u0027,\u0027_wasm7z_has_encrypted_content\u0027,\u0027_malloc\u0027,\u0027_free\u0027]",
+                  "-s EXPORTED_RUNTIME_METHODS=[\u0027cwrap\u0027,\u0027getValue\u0027,\u0027setValue\u0027]"
+              ],
+    "notes":  [
+                  "Added 7z AES password decode path for extraction.",
+                  "Includes fallback compiler resolution in wasm/build.sh for Git Bash on Windows.",
+                  "Includes temporary C-side debug logging for encoded-header/AES troubleshooting."
+              ],
+    "date":  "2026-02-11"
+}

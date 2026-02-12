@@ -3,11 +3,19 @@
 
 #include "Precomp.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "7z.h"
 #include "7zBuf.h"
 #include "7zCrc.h"
+
+#define WASM7Z_OPEN_DEBUG 1
+#if WASM7Z_OPEN_DEBUG
+#define OPEN_DBG(...) fprintf(stderr, "[wasm7z:open] " __VA_ARGS__)
+#else
+#define OPEN_DBG(...)
+#endif
 #include "CpuArch.h"
 
 #define MY_ALLOC(T, p, size, alloc) \
@@ -1020,8 +1028,34 @@ static SRes SzReadAndDecodePackedStreams(
   for (fo = 0; fo < p->NumFolders; fo++)
   {
     const CBuf *tempBuf = tempBufs + fo;
+    {
+      CSzFolder folder;
+      CSzData fsd;
+      const Byte *folderData = p->CodersData + p->FoCodersOffsets[fo];
+      fsd.Data = folderData;
+      fsd.Size = p->FoCodersOffsets[(size_t)fo + 1] - p->FoCodersOffsets[fo];
+      if (SzGetNextFolderItem(&folder, &fsd) == SZ_OK)
+      {
+        UInt32 i;
+        OPEN_DBG("packed-stream folder[%u]: coders=%u packStreams=%u bonds=%u unpack=%u\n",
+            (unsigned)fo, (unsigned)folder.NumCoders, (unsigned)folder.NumPackStreams,
+            (unsigned)folder.NumBonds, (unsigned)folder.UnpackStream);
+        for (i = 0; i < folder.NumCoders; i++)
+          OPEN_DBG("  coder[%u]=%08X streams=%u props=%u\n",
+              (unsigned)i, (unsigned)folder.Coders[i].MethodID,
+              (unsigned)folder.Coders[i].NumStreams, (unsigned)folder.Coders[i].PropsSize);
+      }
+      else
+      {
+        OPEN_DBG("packed-stream folder[%u]: failed to parse folder metadata\n", (unsigned)fo);
+      }
+    }
     RINOK(LookInStream_SeekTo(inStream, dataStartPos))
-    RINOK(SzAr_DecodeFolder(p, fo, inStream, dataStartPos, tempBuf->data, tempBuf->size, allocTemp))
+    {
+      const SRes dres = SzAr_DecodeFolder(p, fo, inStream, dataStartPos, tempBuf->data, tempBuf->size, allocTemp);
+      OPEN_DBG("packed-stream folder[%u] decode result=%d\n", (unsigned)fo, (int)dres);
+      RINOK(dres)
+    }
   }
   
   return SZ_OK;
@@ -1591,6 +1625,7 @@ static SRes SzArEx_Open2(
         tempAr.RangeLimit = p->db.RangeLimit;
 
         res = SzReadAndDecodePackedStreams(inStream, &sd, &tempBuf, 1, p->startPosAfterHeader, &tempAr, allocTemp);
+        OPEN_DBG("encoded header decode result=%d\n", (int)res);
         SzAr_Free(&tempAr, allocTemp);
        
         if (res != SZ_OK)
@@ -1605,6 +1640,7 @@ static SRes SzArEx_Open2(
           sd.Data = buf.data;
           sd.Size = buf.size;
           res = ReadID(&sd, &type);
+          OPEN_DBG("decoded header first type=%llu read_res=%d\n", (unsigned long long)type, (int)res);
         }
       }
   
@@ -1627,7 +1663,10 @@ static SRes SzArEx_Open2(
           res = SzReadHeader(p, &sd, inStream, allocMain, allocTemp);
         }
         else
+        {
+          OPEN_DBG("unexpected top-level header type=%llu\n", (unsigned long long)type);
           res = SZ_ERROR_UNSUPPORTED;
+        }
       }
     }
   }

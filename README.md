@@ -75,6 +75,12 @@ Load the module and set `locateFile` so the WASM file resolves correctly:
 The example page in `wasm/example/app.js` shows the full end-to-end wiring
 (including 7z archive open/extract and repack).
 
+### Opening Encrypted Archives
+
+- `wasm7z_open_with_password(ptr, len, password_utf8)` mirrors `wasm7z_open` but accepts a UTF-8 password string.  
+- A return value of `0` still means success; the special error code `0x80100015` indicates an authentication failure (wrong password).
+- `wasm7z_has_encrypted_content()` returns `1` when the archive contains 7z AES payload coders, so apps can enforce a password flow before extraction.
+
 ## Build
 
 ### Prerequisites
@@ -87,14 +93,15 @@ The example page in `wasm/example/app.js` shows the full end-to-end wiring
 From repo root:
 
 ```bash
-source emsdk/emsdk_env.sh
-./wasm/build.sh
+./wasm/run-build.sh
 ```
 
 Output:
 
 - `wasm/dist/zstd_wasm.js`
 - `wasm/dist/zstd_wasm.wasm`
+
+`run-build.sh` auto-installs/activates emsdk if needed and then calls the build.
 
 If you do not have emsdk yet:
 

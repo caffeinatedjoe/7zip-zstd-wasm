@@ -1,5 +1,5 @@
 {
-  "release": "v7zip-25.01-zstd-1.5.7-wasm.1",
+  "release": "v7zip-25.01-zstd-1.5.7-wasm.2",
   "7zip": {
     "version": "25.01",
     "commit": "23aa522e"
@@ -15,8 +15,8 @@
     "-s MODULARIZE=1",
     "-s EXPORT_NAME=ZstdWasm",
     "-s ENVIRONMENT=web,worker,node",
-    "-s EXPORTED_FUNCTIONS=['_zstd_wasm_compress','_zstd_wasm_compress_bound','_zstd_wasm_decompress','_zstd_wasm_get_frame_content_size','_zstd_wasm_is_error','_zstd_wasm_get_error_name','_wasm7z_open','_wasm7z_close','_wasm7z_file_count','_wasm7z_fetch_name','_wasm7z_name_buffer','_wasm7z_name_length','_wasm7z_is_directory','_wasm7z_file_size','_wasm7z_extract','_malloc','_free']",
+    "-s EXPORTED_FUNCTIONS=['_zstd_wasm_compress','_zstd_wasm_compress_bound','_zstd_wasm_decompress','_zstd_wasm_get_frame_content_size','_zstd_wasm_is_error','_zstd_wasm_get_error_name','_wasm7z_open','_wasm7z_open_with_password','_wasm7z_close','_wasm7z_file_count','_wasm7z_fetch_name','_wasm7z_name_buffer','_wasm7z_name_length','_wasm7z_is_directory','_wasm7z_file_size','_wasm7z_extract','_malloc','_free']",
     "-s EXPORTED_RUNTIME_METHODS=['cwrap','getValue','setValue']"
   ],
-  "date": "2026-02-10"
+  "date": "2026-02-11"
 }
